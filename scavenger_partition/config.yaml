@@ -1,0 +1,34 @@
+mode: "pairwise_two" # separate, or pairwise_two.
+
+#shared
+jcpu: 1
+jgpu: 1
+jmem: 20
+jwalltime: "0:10:00"
+library_path: "/beacon-projects/hp_ppi/libraries/protein/fasta"
+num_loops: 3
+num_sampling_steps: 25
+database_path: "/beacon-projects/hp_ppi/jean/lmajor_hsapiens_jean/lmajor_hsapiens_ppi.db"
+keep_distogram: False
+plot_pae_matrix: False
+
+#mode specific
+separate:
+  keys: "transcript"
+  # species name matching library filename
+  species: "hg38_115"
+  #input file name
+  idfile: "inputs/tp53.txt"
+
+pairwise_two:
+  # key names in the format "key1:key2"
+  keys: "transcript:gene"
+  # species names matching library filename in the format "species1:species2"
+  species: "hg38_115:lmajor_v68"
+  # input file names
+  idfile1: "inputs/filtered_transcript_ids.txt"
+  idfile2: "inputs/lmajor_top75.txt"
+  # optional, if empty, it will use the libpath instead.
+  # use if two species have different library paths.
+  species1_libpath: ""
+  species2_libpath: ""

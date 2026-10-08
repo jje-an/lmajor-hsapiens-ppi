@@ -1,0 +1,13 @@
+*.cif
+*.db
+*.json
+*.csv
+results/
+logs/
+.snakemake/
+slurm-*.out
+__pycache__/
+.pytest_cache/
+.tests/
+test/
+efficiency_reports/

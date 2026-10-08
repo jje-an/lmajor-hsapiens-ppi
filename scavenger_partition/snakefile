@@ -1,0 +1,167 @@
+import sys, os
+import sqlite3
+sys.path.append("scripts")
+from protein_fold_lib import fasta_to_hash, complex_get_metrics, plot_pae_matrix
+from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
+from Bio import SeqIO
+from esm.models.esmfold2 import (
+    DNAInput,
+    ESMFold2InputBuilder,
+    LigandInput,
+    Modification,
+    ProteinInput,
+    StructurePredictionInput,
+)
+
+configfile: "config.yaml"
+
+# database creation
+
+con = sqlite3.connect(config["database_path"])
+cur = con.cursor()
+
+cur.execute(
+        "CREATE TABLE IF NOT EXISTS esm_summaries" \
+            "(job_id TEXT PRIMARY KEY," \
+            "ptm REAL," \
+            "iptm REAL," \
+            "plddt_mean REAL," \
+            "plddt TEXT," \
+            "pae TEXT," \
+            "distogram TEXT," \
+            "pair_chain_iptm TEXT," \
+            "residue_index TEXT," \
+            "entity_id TEXT, "\
+            "gpu_type TEXT);")
+cur.close()
+
+MODE = config["mode"]
+
+def runtime_minutes(hms):
+    h, m, s = map(int, hms.split(":"))
+    return h * 60 + m + (1 if s else 0)
+
+if MODE == "separate": 
+    # get config values
+    mode_cfg = config["separate"]
+    sp = mode_cfg["species"]
+    key = mode_cfg["keys"]
+    species_aa = f'{mode_cfg["library_path"]}/{sp}.fasta'
+    # convert fasta files into hash tables
+    with open(species_aa, "r") as fh:
+        s_hash = fasta_to_hash(fh, key)
+    IDS = [line.strip() for line in open(mode_cfg["idfile"]) if line.strip()]
+    # identify all output files
+    TARGETS = [f"results/separate/{seqid}/{seqid}.cif" for seqid in IDS]
+
+
+elif MODE == "pairwise_two":
+    # get config values
+    mode_cfg = config["pairwise_two"]
+    sp1, sp2 = mode_cfg["species"].split(":")
+    key1, key2 = mode_cfg["keys"].split(":")
+    species1_libpath = mode_cfg["species1_libpath"] or f'{config["library_path"]}/{sp1}.fasta'
+    species2_libpath = mode_cfg["species2_libpath"] or f'{config["library_path"]}/{sp2}.fasta'
+    # convert fasta files into hash tables
+    with open(species1_libpath, "r") as fh1:
+        s1_hash = fasta_to_hash(fh1, key1)
+    with open(species2_libpath, "r") as fh2:
+        s2_hash = fasta_to_hash(fh2, key2)
+    IDS1 = [line.strip() for line in open(mode_cfg["idfile1"]) if line.strip()]
+    IDS2 = [line.strip() for line in open(mode_cfg["idfile2"]) if line.strip()]
+    PAIRS = sorted({tuple((a, b)) for a in IDS1 for b in IDS2})
+    # identify all output files
+    TARGETS = [f"results/pairs/{a}/{b}/{a}_{b}/{a}_{b}.cif" for a, b in PAIRS]
+
+
+else:
+    raise ValueError(f"Unknown mode: {MODE}")
+
+rule all:
+    input:
+        TARGETS
+        
+#separate
+
+rule fold_separate:
+    output:
+        cif="results/separate/{seqid}/{seqid}.cif"
+    params:
+        final_dir="results/separate/{seqid}",
+    resources:
+        gpu=config["jgpu"],
+        mem_mb=config["jmem"] * 1000,
+        runtime=runtime_minutes(config["jwalltime"]),
+        cpus_per_task=config["jcpu"]
+    run:
+        #minimize pytorch unused allocated memory
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
+        seq = str(s_hash[wildcards.seqid].seq)
+        
+        model = ESMFold2Model.from_pretrained("biohub/ESMFold2").cuda().eval()
+        model.set_kernel_backend("fused")   # change from default slow kernel
+        model.set_chunk_size(None)           
+
+        spi = StructurePredictionInput(
+            sequences=[ProteinInput(id="A", sequence=seq)]
+        )
+
+        result = ESMFold2InputBuilder().fold(
+            model, spi, 
+            num_loops=config['num_loops'], 
+            num_sampling_steps=config['num_sampling_steps'], 
+            seed=3)
+
+        print(f'pLDDT mean: {float(result.plddt.mean()):.3f}, pTM: {float(result.ptm):.3f}, ipTM: {float(result.iptm):.3f}')
+        
+        with open(output.cif, "w") as f:
+            f.write(result.complex.to_mmcif())
+            
+        if config["plot_pae_matrix"]:
+            plot_pae_matrix(result, params.job_id, params.final_dir)
+
+rule fold_pairwise:
+    output:
+        cif="results/pairs/{first}/{second}/{first}_{second}/{first}_{second}.cif",
+    params:
+        final_dir="results/pairs/{first}/{second}",
+        job_id="{first}_{second}"
+    resources:
+        gpu=config['jgpu'],
+        mem_mb=config.get("pairwise_two", {}).get("jmem", config["jmem"]) * 1000,
+        runtime=runtime_minutes(config.get("pairwise_two", {}).get("jwalltime", config["jwalltime"])),
+        cpus_per_task=config["jcpu"]
+    run:
+        #minimize pytorch unused allocated memory
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
+        seq1 = str(s1_hash[wildcards.first].seq)
+        seq2 = str(s2_hash[wildcards.second].seq)
+
+        model = ESMFold2Model.from_pretrained("biohub/ESMFold2-Fast").cuda().eval()
+        model.set_kernel_backend("fused")   # change from default "slow" kernel
+        model.set_chunk_size(None)  
+
+        spi = StructurePredictionInput(
+            sequences=[
+                ProteinInput(id="A", sequence=seq1),
+                ProteinInput(id="B", sequence=seq2)
+                ]
+        )
+
+        result = ESMFold2InputBuilder().fold(
+            model, spi, 
+            num_loops=config['num_loops'], 
+            num_sampling_steps=config['num_sampling_steps'], 
+            seed=3)
+
+        with open(output.cif, "w") as f:
+            f.write(result.complex.to_mmcif())
+
+        complex_get_metrics(result, params.job_id, config["database_path"], params.final_dir, keep_distogram=config["keep_distogram"])
+        
+        if config["plot_pae_matrix"]:
+            plot_pae_matrix(result, params.job_id, params.final_dir)
+
+

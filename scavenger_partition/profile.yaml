@@ -1,0 +1,23 @@
+jobs: 200 # max number of jobs that are scheduled at a time
+cores: 4 # how many cpu cores are used for job scheduling
+keep-going: True # whether to stop if a job fails
+rerun-incomplete: True # whether to rerun incomplete jobs
+scheduler-subsample: 1000 # number of jobs to be considered for scheduling at a time
+show-failed-logs: True # show slurm logs in log/terminal when a job fails
+rerun-triggers: input # only the presence of input files will be used to determine reruns
+retries: 1 # retry failed jobs this many times
+max-jobs-per-timespan: 50/1s
+
+# make sure to change this and run all batches! 
+batch: all=1/3 # 2/3 for second batch, 3/3 for third batch
+
+# slurm options
+executor: slurm
+# slurm-array-jobs: all
+# slurm-array-limit: 1000
+slurm-efficiency-report: True 
+slurm-efficiency-report-path: efficiency_reports/
+slurm-keep-successful-logs: True
+default-resources: 
+  qos: scavenger 
+  slurm_partition: scavenger
